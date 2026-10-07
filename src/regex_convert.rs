@@ -183,7 +183,7 @@ fn strip_inline_comments(pattern: &str) -> String {
 /// # Returns
 /// A regex pattern string compatible with both the `regex` crate and `regexml`.
 pub fn convert_xml_pattern(pattern: &str, options: ConvertOptions) -> String {
-    let extra_capacity = if options.anchor { 4 } else { 0 };
+    let extra_capacity = if options.anchor { 6 } else { 0 };
     // Under V1_0, `\d` / `\D` / `\w` / `\W` and `\p{X}` expand to multi-KB
     // explicit ranges; over-allocate to avoid repeated reallocations
     // (mirrors `rewrite_xsd10_category_escapes` at line 184).
@@ -194,7 +194,7 @@ pub fn convert_xml_pattern(pattern: &str, options: ConvertOptions) -> String {
     let mut result = String::with_capacity(initial_capacity);
 
     if options.anchor {
-        result.push('^');
+        result.push_str("^(?:");
     }
 
     let mut in_class = false;
@@ -273,7 +273,7 @@ pub fn convert_xml_pattern(pattern: &str, options: ConvertOptions) -> String {
     }
 
     if options.anchor {
-        result.push('$');
+        result.push_str(")$");
     }
     result
 }
@@ -706,7 +706,22 @@ mod tests {
     #[test]
     fn test_xsd_anchoring() {
         let result = convert_xml_pattern("abc", ConvertOptions::xsd());
-        assert_eq!(result, "^abc$");
+        assert_eq!(result, "^(?:abc)$");
+    }
+
+    #[test]
+    fn test_xsd_anchoring_spans_top_level_alternation() {
+        // The shape of HL7 CDA's `ts`: each branch must match the whole value.
+        let pattern = r"[0-9]{1,8}|([0-9]{9,14}|[0-9]{14,14}\.[0-9]+)([+\-][0-9]{1,4})?";
+        for options in [ConvertOptions::xsd(), ConvertOptions::xsd_v1_0()] {
+            let regex = Regex::new(&convert_xml_pattern(pattern, options)).unwrap();
+            for valid in ["20130815", "201308151030", "201308151030-0800"] {
+                assert!(regex.is_match(valid), "{valid}");
+            }
+            for invalid in ["2013-08-15", "abc201308151030", "20130815xyz", "1975 May"] {
+                assert!(!regex.is_match(invalid), "{invalid}");
+            }
+        }
     }
 
     #[test]
@@ -718,7 +733,7 @@ mod tests {
     #[test]
     fn test_xml_name_pattern() {
         let result = convert_xml_pattern(r"\i\c*", ConvertOptions::xsd());
-        assert_eq!(result, r"^[A-Za-z_:][A-Za-z0-9._:\-]*$");
+        assert_eq!(result, r"^(?:[A-Za-z_:][A-Za-z0-9._:\-]*)$");
         let regex = Regex::new(&result).unwrap();
         assert!(regex.is_match("foo"));
         assert!(regex.is_match("foo:bar"));
@@ -741,8 +756,8 @@ mod tests {
     #[test]
     fn test_v1_0_expands_p_category_escape() {
         let result = convert_xml_pattern(r"\p{Lu}*", ConvertOptions::xsd_v1_0());
-        assert!(result.starts_with("^["));
-        assert!(result.ends_with("]*$"));
+        assert!(result.starts_with("^(?:["));
+        assert!(result.ends_with("]*)$"));
         assert!(!result.contains("\\p{"));
         let regex = Regex::new(&result).unwrap();
         assert!(regex.is_match("A"));
@@ -780,7 +795,7 @@ mod tests {
     #[test]
     fn test_mixed_pattern() {
         let result = convert_xml_pattern(r"\i\c*:\d+", ConvertOptions::xsd());
-        assert_eq!(result, r"^[A-Za-z_:][A-Za-z0-9._:\-]*:\d+$");
+        assert_eq!(result, r"^(?:[A-Za-z_:][A-Za-z0-9._:\-]*:\d+)$");
         let regex = Regex::new(&result).unwrap();
         assert!(regex.is_match("item:123"));
         assert!(!regex.is_match("123:abc"));
@@ -789,7 +804,7 @@ mod tests {
     #[test]
     fn test_empty_pattern() {
         let result = convert_xml_pattern("", ConvertOptions::xsd());
-        assert_eq!(result, "^$");
+        assert_eq!(result, "^(?:)$");
 
         let result = convert_xml_pattern("", ConvertOptions::xpath());
         assert_eq!(result, "");
